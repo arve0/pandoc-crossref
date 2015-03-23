@@ -1,7 +1,7 @@
+{-# LANGUAGE FlexibleContexts #-}
 import Text.Pandoc.JSON
 import Text.Pandoc.Walk
 import Text.Pandoc.Generic
-import Text.Pandoc.Shared (normalizeInlines,stringify)
 import Control.Monad.State
 import Data.List
 import Data.Maybe
@@ -296,3 +296,149 @@ isFormat fmt (Format f)
   , x `elem` "+-"
   = True
   | otherwise = False
+
+-- Copied over from Text.Pandoc.Shared
+normalizeInlines :: [Inline] -> [Inline]
+normalizeInlines (Str x : ys) =
+  case concat (x : map fromStr strs) of
+        ""     -> rest
+        n      -> Str n : rest
+   where
+     (strs, rest)  = span isStr $ normalizeInlines ys
+     isStr (Str _) = True
+     isStr _       = False
+     fromStr (Str z) = z
+     fromStr _       = error "normalizeInlines - fromStr - not a Str"
+normalizeInlines (Space : ys) =
+  if null rest
+     then []
+     else Space : rest
+   where isSp Space = True
+         isSp _     = False
+         rest       = dropWhile isSp $ normalizeInlines ys
+normalizeInlines (Emph xs : zs) =
+  case normalizeInlines zs of
+       (Emph ys : rest) -> normalizeInlines $
+         Emph (normalizeInlines $ xs ++ ys) : rest
+       rest -> case normalizeInlines xs of
+                    []  -> rest
+                    xs' -> Emph xs' : rest
+normalizeInlines (Strong xs : zs) =
+  case normalizeInlines zs of
+       (Strong ys : rest) -> normalizeInlines $
+         Strong (normalizeInlines $ xs ++ ys) : rest
+       rest -> case normalizeInlines xs of
+                    []  -> rest
+                    xs' -> Strong xs' : rest
+normalizeInlines (Subscript xs : zs) =
+  case normalizeInlines zs of
+       (Subscript ys : rest) -> normalizeInlines $
+         Subscript (normalizeInlines $ xs ++ ys) : rest
+       rest -> case normalizeInlines xs of
+                    []  -> rest
+                    xs' -> Subscript xs' : rest
+normalizeInlines (Superscript xs : zs) =
+  case normalizeInlines zs of
+       (Superscript ys : rest) -> normalizeInlines $
+         Superscript (normalizeInlines $ xs ++ ys) : rest
+       rest -> case normalizeInlines xs of
+                    []  -> rest
+                    xs' -> Superscript xs' : rest
+normalizeInlines (SmallCaps xs : zs) =
+  case normalizeInlines zs of
+       (SmallCaps ys : rest) -> normalizeInlines $
+         SmallCaps (normalizeInlines $ xs ++ ys) : rest
+       rest -> case normalizeInlines xs of
+                    []  -> rest
+                    xs' -> SmallCaps xs' : rest
+normalizeInlines (Strikeout xs : zs) =
+  case normalizeInlines zs of
+       (Strikeout ys : rest) -> normalizeInlines $
+         Strikeout (normalizeInlines $ xs ++ ys) : rest
+       rest -> case normalizeInlines xs of
+                    []  -> rest
+                    xs' -> Strikeout xs' : rest
+normalizeInlines (RawInline _ [] : ys) = normalizeInlines ys
+normalizeInlines (RawInline f xs : zs) =
+  case normalizeInlines zs of
+       (RawInline f' ys : rest) | f == f' -> normalizeInlines $
+         RawInline f (xs ++ ys) : rest
+       rest -> RawInline f xs : rest
+normalizeInlines (Code _ "" : ys) = normalizeInlines ys
+normalizeInlines (Code attr xs : zs) =
+  case normalizeInlines zs of
+       (Code attr' ys : rest) | attr == attr' -> normalizeInlines $
+         Code attr (xs ++ ys) : rest
+       rest -> Code attr xs : rest
+-- allow empty spans, they may carry identifiers etc.
+-- normalizeInlines (Span _ [] : ys) = normalizeInlines ys
+normalizeInlines (Span attr xs : zs) =
+  case normalizeInlines zs of
+       (Span attr' ys : rest) | attr == attr' -> normalizeInlines $
+         Span attr (normalizeInlines $ xs ++ ys) : rest
+       rest -> Span attr (normalizeInlines xs) : rest
+normalizeInlines (Note bs : ys) = Note (normalizeBlocks bs) :
+  normalizeInlines ys
+normalizeInlines (Quoted qt ils : ys) =
+  Quoted qt (normalizeInlines ils) : normalizeInlines ys
+normalizeInlines (Link ils t : ys) =
+  Link (normalizeInlines ils) t : normalizeInlines ys
+normalizeInlines (Image ils t : ys) =
+  Image (normalizeInlines ils) t : normalizeInlines ys
+normalizeInlines (Cite cs ils : ys) =
+  Cite cs (normalizeInlines ils) : normalizeInlines ys
+normalizeInlines (x : xs) = x : normalizeInlines xs
+normalizeInlines [] = []
+
+normalizeBlocks :: [Block] -> [Block]
+normalizeBlocks (Null : xs) = normalizeBlocks xs
+normalizeBlocks (Div attr bs : xs) =
+  Div attr (normalizeBlocks bs) : normalizeBlocks xs
+normalizeBlocks (BlockQuote bs : xs) =
+  case normalizeBlocks bs of
+       []    -> normalizeBlocks xs
+       bs'   -> BlockQuote bs' : normalizeBlocks xs
+normalizeBlocks (BulletList [] : xs) = normalizeBlocks xs
+normalizeBlocks (BulletList items : xs) =
+  BulletList (map normalizeBlocks items) : normalizeBlocks xs
+normalizeBlocks (OrderedList _ [] : xs) = normalizeBlocks xs
+normalizeBlocks (OrderedList attr items : xs) =
+  OrderedList attr (map normalizeBlocks items) : normalizeBlocks xs
+normalizeBlocks (DefinitionList [] : xs) = normalizeBlocks xs
+normalizeBlocks (DefinitionList items : xs) =
+  DefinitionList (map go' items) : normalizeBlocks xs
+  where go' (ils, bs) = (normalizeInlines ils, map normalizeBlocks bs)
+normalizeBlocks (RawBlock _ "" : xs) = normalizeBlocks xs
+normalizeBlocks (RawBlock f x : xs) =
+   case normalizeBlocks xs of
+        (RawBlock f' x' : rest) | f' == f ->
+          RawBlock f (x ++ ('\n':x')) : rest
+        rest -> RawBlock f x : rest
+normalizeBlocks (Para ils : xs) =
+  case normalizeInlines ils of
+       []   -> normalizeBlocks xs
+       ils' -> Para ils' : normalizeBlocks xs
+normalizeBlocks (Plain ils : xs) =
+  case normalizeInlines ils of
+       []   -> normalizeBlocks xs
+       ils' -> Plain ils' : normalizeBlocks xs
+normalizeBlocks (Header lev attr ils : xs) =
+  Header lev attr (normalizeInlines ils) : normalizeBlocks xs
+normalizeBlocks (Table capt aligns widths hdrs rows : xs) =
+  Table (normalizeInlines capt) aligns widths
+    (map normalizeBlocks hdrs) (map (map normalizeBlocks) rows)
+  : normalizeBlocks xs
+normalizeBlocks (x:xs) = x : normalizeBlocks xs
+normalizeBlocks [] = []
+
+stringify :: Walkable Inline a => a -> String
+stringify = query go' . walk deNote
+  where go' :: Inline -> String
+        go' Space = " "
+        go' (Str x) = x
+        go' (Code _ x) = x
+        go' (Math _ x) = x
+        go' LineBreak = " "
+        go' _ = ""
+        deNote (Note _) = Str ""
+        deNote x = x
